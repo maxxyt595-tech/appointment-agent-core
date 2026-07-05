@@ -26,9 +26,13 @@ function getDayKey(date) {
   return date.format("dddd").toLowerCase();
 }
 
-function isInsideBusinessHours(start, end) {
-  const dayKey = getDayKey(start);
-  const dayHours = businessConfig.hours[dayKey];
+function getBusinessHoursForDate(date) {
+  const dayKey = getDayKey(date);
+  return businessConfig.hours[dayKey];
+}
+
+function isInsideBusinessHours(start, end, timezone = TIMEZONE) {
+  const dayHours = getBusinessHoursForDate(start);
 
   if (!dayHours) {
     return {
@@ -37,8 +41,8 @@ function isInsideBusinessHours(start, end) {
     };
   }
 
-  const open = dayjs.tz(`${start.format("YYYY-MM-DD")}T${dayHours.open}`, TIMEZONE);
-  const close = dayjs.tz(`${start.format("YYYY-MM-DD")}T${dayHours.close}`, TIMEZONE);
+  const open = dayjs.tz(`${start.format("YYYY-MM-DD")}T${dayHours.open}`, timezone);
+  const close = dayjs.tz(`${start.format("YYYY-MM-DD")}T${dayHours.close}`, timezone);
 
   if (start.isBefore(open) || end.isAfter(close)) {
     return {
@@ -56,12 +60,124 @@ function normalizePhone(phoneNumber) {
   return String(phoneNumber || "").replace(/\D/g, "");
 }
 
+function isValidDateOnly(date) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(date || ""));
+}
+
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
     service: "appointment-agent-core",
     business: businessConfig.businessName
   });
+});
+
+app.post("/check-available-slots", async (req, res) => {
+  try {
+    const { service, date, timezone } = req.body;
+
+    if (!service || !date) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing required fields: service, date"
+      });
+    }
+
+    const selectedService = businessConfig.services[service];
+
+    if (!selectedService) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid service",
+        allowed_services: Object.keys(businessConfig.services)
+      });
+    }
+
+    if (!isValidDateOnly(date)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid date. Use YYYY-MM-DD."
+      });
+    }
+
+    const bookingTimezone = timezone || TIMEZONE;
+    const selectedDate = dayjs.tz(`${date}T00:00:00`, bookingTimezone);
+
+    if (!selectedDate.isValid()) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid date"
+      });
+    }
+
+    const dayHours = getBusinessHoursForDate(selectedDate);
+
+    if (!dayHours) {
+      return res.json({
+        status: "unavailable",
+        message: "That date is outside business hours.",
+        service,
+        date: selectedDate.format("dddd, MMMM D, YYYY"),
+        available_slots: []
+      });
+    }
+
+    const open = dayjs.tz(`${date}T${dayHours.open}`, bookingTimezone);
+    const close = dayjs.tz(`${date}T${dayHours.close}`, bookingTimezone);
+    const now = dayjs().tz(bookingTimezone);
+
+    const availableSlots = [];
+    let cursor = open;
+
+    while (cursor.add(selectedService.durationMinutes, "minute").isSame(close) || cursor.add(selectedService.durationMinutes, "minute").isBefore(close)) {
+      const slotStart = cursor;
+      const slotEnd = cursor.add(selectedService.durationMinutes, "minute");
+
+      if (slotStart.isAfter(now)) {
+        const availability = await checkAvailability({
+          calendarId: CALENDAR_ID,
+          startDateTime: slotStart.toISOString(),
+          endDateTime: slotEnd.toISOString(),
+          timezone: bookingTimezone
+        });
+
+        if (availability.available) {
+          availableSlots.push({
+            start_time: slotStart.format("h:mm A"),
+            end_time: slotEnd.format("h:mm A"),
+            start_datetime: slotStart.format()
+          });
+        }
+      }
+
+      cursor = cursor.add(15, "minute");
+    }
+
+    if (availableSlots.length === 0) {
+      return res.json({
+        status: "full",
+        message: "No available slots found for that date.",
+        service,
+        date: selectedDate.format("dddd, MMMM D, YYYY"),
+        available_slots: []
+      });
+    }
+
+    return res.json({
+      status: "available",
+      service,
+      date: selectedDate.format("dddd, MMMM D, YYYY"),
+      available_slots: availableSlots
+    });
+  } catch (error) {
+    console.error("Available slots error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Could not check available slots.",
+      details: error.message
+    });
+  }
 });
 
 app.post("/book-appointment-if-available", async (req, res) => {
@@ -112,7 +228,7 @@ app.post("/book-appointment-if-available", async (req, res) => {
       });
     }
 
-    const hoursCheck = isInsideBusinessHours(start, end);
+    const hoursCheck = isInsideBusinessHours(start, end, bookingTimezone);
 
     if (!hoursCheck.valid) {
       return res.status(400).json({
