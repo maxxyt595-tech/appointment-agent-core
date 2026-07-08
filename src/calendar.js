@@ -79,3 +79,37 @@ export async function createCalendarEvent({
 
   return response.data;
 }
+
+
+export async function listCalendarEvents({
+  calendarId,
+  timeMin,
+  timeMax,
+  timezone
+}) {
+  const response = await calendar.events.list({
+    calendarId,
+    timeMin,
+    timeMax,
+    timeZone: timezone,
+    singleEvents: true,
+    orderBy: "startTime"
+  });
+
+  return response.data.items || [];
+}
+
+export async function deleteCalendarEvent({
+  calendarId,
+  eventId
+}) {
+  await calendar.events.delete({
+    calendarId,
+    eventId
+  });
+
+  return {
+    deleted: true,
+    eventId
+  };
+}

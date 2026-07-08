@@ -6,7 +6,7 @@ import utc from "dayjs/plugin/utc.js";
 import timezonePlugin from "dayjs/plugin/timezone.js";
 
 import { businessConfig } from "./businessConfig.js";
-import { checkAvailability, createCalendarEvent } from "./calendar.js";
+import { checkAvailability, createCalendarEvent, deleteCalendarEvent, listCalendarEvents } from "./calendar.js";
 
 dotenv.config();
 
@@ -58,6 +58,21 @@ function isInsideBusinessHours(start, end, timezone = TIMEZONE) {
 
 function normalizePhone(phoneNumber) {
   return String(phoneNumber || "").replace(/\D/g, "");
+}
+
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function getEventSearchText(event) {
+  return normalizeText(`${event.summary || ""} ${event.description || ""}`);
+}
+
+function isSameStartMinute(eventStart, requestedStart) {
+  return Math.abs(eventStart.valueOf() - requestedStart.valueOf()) <= 60 * 1000;
 }
 
 function isValidDateOnly(date) {
@@ -185,6 +200,133 @@ app.post("/check-available-slots", async (req, res) => {
     return res.status(500).json({
       status: "error",
       message: "Could not check available slots.",
+      details: error.message
+    });
+  }
+});
+
+
+app.post("/cancel-appointment-if-found", async (req, res) => {
+  try {
+    const {
+      customer_name,
+      phone_number,
+      service,
+      start_datetime,
+      timezone,
+      notes
+    } = req.body;
+
+    if (!customer_name || !phone_number || !service || !start_datetime) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing required fields: customer_name, phone_number, service, start_datetime"
+      });
+    }
+
+    const selectedService = businessConfig.services[service];
+
+    if (!selectedService) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid service",
+        allowed_services: Object.keys(businessConfig.services)
+      });
+    }
+
+    const bookingTimezone = timezone || TIMEZONE;
+    const requestedStart = dayjs(start_datetime).tz(bookingTimezone);
+
+    if (!requestedStart.isValid()) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid start_datetime"
+      });
+    }
+
+    const cleanPhone = normalizePhone(phone_number);
+    const cleanName = normalizeText(customer_name);
+    const cleanServiceName = normalizeText(selectedService.name);
+
+    const searchStart = requestedStart.subtract(1, "minute");
+    const searchEnd = requestedStart.add(selectedService.durationMinutes + 1, "minute");
+
+    const events = await listCalendarEvents({
+      calendarId: CALENDAR_ID,
+      timeMin: searchStart.toISOString(),
+      timeMax: searchEnd.toISOString(),
+      timezone: bookingTimezone
+    });
+
+    const matches = events.filter((event) => {
+      const eventStartRaw = event.start?.dateTime;
+
+      if (!eventStartRaw) {
+        return false;
+      }
+
+      const eventStart = dayjs(eventStartRaw).tz(bookingTimezone);
+      const eventText = getEventSearchText(event);
+      const eventPhoneDigits = normalizePhone(event.description || "");
+
+      const phoneMatches = eventPhoneDigits.includes(cleanPhone);
+      const nameMatches = eventText.includes(cleanName);
+      const serviceMatches = eventText.includes(cleanServiceName);
+      const timeMatches = isSameStartMinute(eventStart, requestedStart);
+
+      return phoneMatches && nameMatches && serviceMatches && timeMatches;
+    });
+
+    if (matches.length === 0) {
+      return res.json({
+        status: "not_found",
+        message: "No matching appointment found. Nothing was canceled.",
+        service: selectedService.name,
+        customer_name,
+        phone_number: cleanPhone,
+        date: requestedStart.format("dddd, MMMM D, YYYY"),
+        start_time: requestedStart.format("h:mm A")
+      });
+    }
+
+    if (matches.length > 1) {
+      return res.json({
+        status: "ambiguous",
+        message: "More than one matching appointment was found. Nothing was canceled.",
+        service: selectedService.name,
+        customer_name,
+        phone_number: cleanPhone,
+        date: requestedStart.format("dddd, MMMM D, YYYY"),
+        start_time: requestedStart.format("h:mm A")
+      });
+    }
+
+    const eventToCancel = matches[0];
+
+    await deleteCalendarEvent({
+      calendarId: CALENDAR_ID,
+      eventId: eventToCancel.id
+    });
+
+    return res.json({
+      status: "canceled",
+      message: "Appointment canceled",
+      business: businessConfig.businessName,
+      service: selectedService.name,
+      customer_name,
+      phone_number: cleanPhone,
+      date: requestedStart.format("dddd, MMMM D, YYYY"),
+      start_time: requestedStart.format("h:mm A"),
+      timezone: bookingTimezone,
+      canceled_event_id: eventToCancel.id,
+      notes: notes || ""
+    });
+  } catch (error) {
+    console.error("Cancellation error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Could not cancel appointment",
       details: error.message
     });
   }
