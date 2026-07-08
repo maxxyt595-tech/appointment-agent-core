@@ -150,7 +150,7 @@ app.post("/check-available-slots", async (req, res) => {
         }
       }
 
-      cursor = cursor.add(15, "minute");
+      cursor = cursor.add(60, "minute");
     }
 
     if (availableSlots.length === 0) {
@@ -163,7 +163,7 @@ app.post("/check-available-slots", async (req, res) => {
       });
     }
 
-    const firstAvailableTimes = availableSlots.slice(0, 5).map((slot) => slot.start_time);
+    const firstAvailableTimes = availableSlots.slice(0, 4).map((slot) => slot.start_time);
     const availableTimesText =
       firstAvailableTimes.length === 1
         ? firstAvailableTimes[0]
