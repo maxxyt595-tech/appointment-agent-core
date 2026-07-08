@@ -163,10 +163,20 @@ app.post("/check-available-slots", async (req, res) => {
       });
     }
 
+    const firstAvailableTimes = availableSlots.slice(0, 5).map((slot) => slot.start_time);
+    const availableTimesText =
+      firstAvailableTimes.length === 1
+        ? firstAvailableTimes[0]
+        : `${firstAvailableTimes.slice(0, -1).join(", ")}, and ${firstAvailableTimes.at(-1)}`;
+
+    const spokenMessage = `For ${selectedService.name.toLowerCase()} on ${selectedDate.format("dddd, MMMM D")}, I have ${availableTimesText} available. Which one works best for you?`;
+
     return res.json({
       status: "available",
+      message: spokenMessage,
       service,
       date: selectedDate.format("dddd, MMMM D, YYYY"),
+      available_times_text: availableTimesText,
       available_slots: availableSlots
     });
   } catch (error) {
