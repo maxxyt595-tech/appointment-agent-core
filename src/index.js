@@ -245,7 +245,6 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
     }
 
     const cleanPhone = normalizePhone(phone_number);
-    const cleanName = normalizeText(customer_name);
     const cleanServiceName = normalizeText(selectedService.name);
 
     const searchStart = requestedStart.subtract(1, "minute");
@@ -258,7 +257,10 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
       timezone: bookingTimezone
     });
 
-    const matches = events.filter((event) => {
+    // Cancellation matching rule:
+    // Primary safe match = exact appointment start time + phone number.
+    // Name and service can be misheard by voice transcription, so they are not required.
+    const phoneAndTimeMatches = events.filter((event) => {
       const eventStartRaw = event.start?.dateTime;
 
       if (!eventStartRaw) {
@@ -266,16 +268,21 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
       }
 
       const eventStart = dayjs(eventStartRaw).tz(bookingTimezone);
-      const eventText = getEventSearchText(event);
       const eventPhoneDigits = normalizePhone(event.description || "");
 
       const phoneMatches = eventPhoneDigits.includes(cleanPhone);
-      const nameMatches = eventText.includes(cleanName);
-      const serviceMatches = eventText.includes(cleanServiceName);
       const timeMatches = isSameStartMinute(eventStart, requestedStart);
 
-      return phoneMatches && nameMatches && serviceMatches && timeMatches;
+      return phoneMatches && timeMatches;
     });
+
+    // If multiple phone/time matches exist, prefer the one with matching service.
+    const serviceMatches = phoneAndTimeMatches.filter((event) => {
+      const eventText = getEventSearchText(event);
+      return eventText.includes(cleanServiceName);
+    });
+
+    const matches = serviceMatches.length > 0 ? serviceMatches : phoneAndTimeMatches;
 
     if (matches.length === 0) {
       return res.json({
