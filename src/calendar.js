@@ -113,3 +113,41 @@ export async function deleteCalendarEvent({
     eventId
   };
 }
+
+
+export async function updateCalendarEvent({
+  calendarId,
+  eventId,
+  title,
+  description,
+  startDateTime,
+  endDateTime,
+  timezone
+}) {
+  const requestBody = {
+    start: {
+      dateTime: startDateTime,
+      timeZone: timezone
+    },
+    end: {
+      dateTime: endDateTime,
+      timeZone: timezone
+    }
+  };
+
+  if (title !== undefined) {
+    requestBody.summary = title;
+  }
+
+  if (description !== undefined) {
+    requestBody.description = description;
+  }
+
+  const response = await calendar.events.patch({
+    calendarId,
+    eventId,
+    requestBody
+  });
+
+  return response.data;
+}

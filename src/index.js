@@ -6,7 +6,7 @@ import utc from "dayjs/plugin/utc.js";
 import timezonePlugin from "dayjs/plugin/timezone.js";
 
 import { businessConfig } from "./businessConfig.js";
-import { checkAvailability, createCalendarEvent, deleteCalendarEvent, listCalendarEvents } from "./calendar.js";
+import { checkAvailability, createCalendarEvent, deleteCalendarEvent, listCalendarEvents, updateCalendarEvent } from "./calendar.js";
 
 dotenv.config();
 
@@ -73,6 +73,39 @@ function getEventSearchText(event) {
 
 function isSameStartMinute(eventStart, requestedStart) {
   return Math.abs(eventStart.valueOf() - requestedStart.valueOf()) <= 60 * 1000;
+}
+
+function findServiceKeyFromEvent(event) {
+  const eventText = getEventSearchText(event);
+
+  for (const [serviceKey, serviceConfig] of Object.entries(businessConfig.services)) {
+    if (
+      eventText.includes(normalizeText(serviceKey)) ||
+      eventText.includes(normalizeText(serviceConfig.name))
+    ) {
+      return serviceKey;
+    }
+  }
+
+  return null;
+}
+
+function extractCustomerNameFromEvent(event) {
+  const description = event.description || "";
+  const match = description.match(/Customer name:\s*(.+)/i);
+
+  if (match?.[1]) {
+    return match[1].trim();
+  }
+
+  const summary = event.summary || "";
+  const parts = summary.split(" - ");
+
+  if (parts.length >= 2) {
+    return parts.slice(1).join(" - ").trim();
+  }
+
+  return "";
 }
 
 function isValidDateOnly(date) {
@@ -457,6 +490,216 @@ app.post("/book-appointment-if-available", async (req, res) => {
     });
   }
 });
+
+
+app.post("/reschedule-appointment-if-found", async (req, res) => {
+  try {
+    const {
+      customer_name,
+      phone_number,
+      service,
+      current_start_datetime,
+      old_start_datetime,
+      original_start_datetime,
+      new_start_datetime,
+      timezone,
+      notes
+    } = req.body;
+
+    const currentStartInput =
+      current_start_datetime || old_start_datetime || original_start_datetime;
+
+    if (!phone_number || !currentStartInput || !new_start_datetime) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing required fields: phone_number, current_start_datetime, new_start_datetime"
+      });
+    }
+
+    const bookingTimezone = timezone || TIMEZONE;
+    const currentStart = dayjs(currentStartInput).tz(bookingTimezone);
+    const newStart = dayjs(new_start_datetime).tz(bookingTimezone);
+
+    if (!currentStart.isValid() || !newStart.isValid()) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid current_start_datetime or new_start_datetime"
+      });
+    }
+
+    const now = dayjs().tz(bookingTimezone);
+
+    if (newStart.isBefore(now)) {
+      return res.json({
+        status: "unavailable",
+        message: "Cannot reschedule an appointment into the past"
+      });
+    }
+
+    if (isSameStartMinute(currentStart, newStart)) {
+      return res.json({
+        status: "no_change",
+        message: "The new appointment time is the same as the current appointment",
+        date: currentStart.format("dddd, MMMM D, YYYY"),
+        start_time: currentStart.format("h:mm A")
+      });
+    }
+
+    const cleanPhone = normalizePhone(phone_number);
+
+    const searchStart = currentStart.subtract(1, "minute");
+    const searchEnd = currentStart.add(1, "minute");
+
+    const currentSlotEvents = await listCalendarEvents({
+      calendarId: CALENDAR_ID,
+      timeMin: searchStart.toISOString(),
+      timeMax: searchEnd.toISOString(),
+      timezone: bookingTimezone
+    });
+
+    const matches = currentSlotEvents.filter((event) => {
+      const eventStartRaw = event.start?.dateTime;
+
+      if (!eventStartRaw || event.status === "cancelled") {
+        return false;
+      }
+
+      const eventStart = dayjs(eventStartRaw).tz(bookingTimezone);
+      const eventPhoneDigits = normalizePhone(event.description || "");
+
+      return eventPhoneDigits.includes(cleanPhone) && isSameStartMinute(eventStart, currentStart);
+    });
+
+    if (matches.length === 0) {
+      return res.json({
+        status: "not_found",
+        message: "No matching appointment found. Nothing was changed.",
+        phone_number: cleanPhone,
+        current_date: currentStart.format("dddd, MMMM D, YYYY"),
+        current_start_time: currentStart.format("h:mm A")
+      });
+    }
+
+    if (matches.length > 1) {
+      return res.json({
+        status: "ambiguous",
+        message: "More than one matching appointment was found. Nothing was changed.",
+        phone_number: cleanPhone,
+        current_date: currentStart.format("dddd, MMMM D, YYYY"),
+        current_start_time: currentStart.format("h:mm A")
+      });
+    }
+
+    const eventToMove = matches[0];
+
+    let serviceKey = null;
+
+    if (service && businessConfig.services[service]) {
+      serviceKey = service;
+    } else {
+      serviceKey = findServiceKeyFromEvent(eventToMove);
+    }
+
+    if (!serviceKey || !businessConfig.services[serviceKey]) {
+      return res.json({
+        status: "need_service",
+        message: "I found the appointment, but I need the service to safely calculate the new appointment length.",
+        phone_number: cleanPhone,
+        current_date: currentStart.format("dddd, MMMM D, YYYY"),
+        current_start_time: currentStart.format("h:mm A")
+      });
+    }
+
+    const selectedService = businessConfig.services[serviceKey];
+    const newEnd = newStart.add(selectedService.durationMinutes, "minute");
+
+    const hoursCheck = isInsideBusinessHours(newStart, newEnd);
+
+    if (!hoursCheck.valid) {
+      return res.json({
+        status: "unavailable",
+        message: hoursCheck.reason,
+        requested_new_slot: {
+          date: newStart.format("dddd, MMMM D, YYYY"),
+          start_time: newStart.format("h:mm A"),
+          end_time: newEnd.format("h:mm A")
+        }
+      });
+    }
+
+    const newSlotEvents = await listCalendarEvents({
+      calendarId: CALENDAR_ID,
+      timeMin: newStart.toISOString(),
+      timeMax: newEnd.toISOString(),
+      timezone: bookingTimezone
+    });
+
+    const conflicts = newSlotEvents.filter((event) => {
+      return event.status !== "cancelled" && event.id !== eventToMove.id;
+    });
+
+    if (conflicts.length > 0) {
+      return res.json({
+        status: "busy",
+        message: "Requested new time is already booked. Existing appointment was not changed.",
+        requested_new_slot: {
+          date: newStart.format("dddd, MMMM D, YYYY"),
+          start_time: newStart.format("h:mm A"),
+          end_time: newEnd.format("h:mm A")
+        },
+        current_slot_kept: {
+          date: currentStart.format("dddd, MMMM D, YYYY"),
+          start_time: currentStart.format("h:mm A")
+        }
+      });
+    }
+
+    const existingDescription = eventToMove.description || "";
+    const rescheduleNote = [
+      "",
+      "Rescheduled by AI phone agent",
+      `Previous appointment time: ${currentStart.format("dddd, MMMM D, YYYY")} at ${currentStart.format("h:mm A")}`,
+      `New appointment time: ${newStart.format("dddd, MMMM D, YYYY")} at ${newStart.format("h:mm A")}`,
+      `Notes: ${notes || ""}`
+    ].join("\n");
+
+    const updatedEvent = await updateCalendarEvent({
+      calendarId: CALENDAR_ID,
+      eventId: eventToMove.id,
+      title: eventToMove.summary,
+      description: existingDescription + rescheduleNote,
+      startDateTime: newStart.toISOString(),
+      endDateTime: newEnd.toISOString(),
+      timezone: bookingTimezone
+    });
+
+    return res.json({
+      status: "rescheduled",
+      message: "Appointment rescheduled",
+      business: businessConfig.businessName,
+      service: selectedService.name,
+      customer_name: customer_name || extractCustomerNameFromEvent(eventToMove),
+      phone_number: cleanPhone,
+      old_date: currentStart.format("dddd, MMMM D, YYYY"),
+      old_start_time: currentStart.format("h:mm A"),
+      new_date: newStart.format("dddd, MMMM D, YYYY"),
+      new_start_time: newStart.format("h:mm A"),
+      new_end_time: newEnd.format("h:mm A"),
+      timezone: bookingTimezone,
+      calendar_event_id: updatedEvent.id,
+      calendar_event_link: updatedEvent.htmlLink
+    });
+  } catch (error) {
+    console.error("Reschedule error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Could not reschedule appointment",
+      details: error.message
+    });
+  }
+});
+
 
 app.listen(PORT, () => {
   console.log(`Appointment Agent Core running on http://localhost:${PORT}`);
