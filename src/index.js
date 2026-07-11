@@ -120,6 +120,127 @@ app.get("/", (req, res) => {
   });
 });
 
+
+app.post("/book-appointment-if-available", async (req, res) => {
+  try {
+    const {
+      customer_name,
+      phone_number,
+      service,
+      start_datetime,
+      timezone,
+      notes
+    } = req.body;
+
+    if (!customer_name || !phone_number || !service || !start_datetime) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing required fields: customer_name, phone_number, service, start_datetime"
+      });
+    }
+
+    const selectedService = businessConfig.services[service];
+
+    if (!selectedService) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid service",
+        allowed_services: Object.keys(businessConfig.services)
+      });
+    }
+
+    const bookingTimezone = timezone || TIMEZONE;
+    const start = dayjs(start_datetime).tz(bookingTimezone);
+    const end = start.add(selectedService.durationMinutes, "minute");
+
+    if (!start.isValid()) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid start_datetime"
+      });
+    }
+
+    const now = dayjs().tz(bookingTimezone);
+
+    if (start.isBefore(now)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Cannot book an appointment in the past"
+      });
+    }
+
+    const hoursCheck = isInsideBusinessHours(start, end);
+
+    if (!hoursCheck.valid) {
+      return res.status(400).json({
+        status: "unavailable",
+        reason: hoursCheck.reason
+      });
+    }
+
+    const availability = await checkAvailability({
+      calendarId: CALENDAR_ID,
+      startDateTime: start.toISOString(),
+      endDateTime: end.toISOString(),
+      timezone: bookingTimezone
+    });
+
+    if (!availability.available) {
+      return res.json({
+        status: "busy",
+        message: "Requested time is already booked",
+        requested_slot: {
+          date: start.format("dddd, MMMM D, YYYY"),
+          start_time: start.format("h:mm A"),
+          end_time: end.format("h:mm A")
+        },
+        busy_slots: availability.busySlots
+      });
+    }
+
+    const cleanPhone = normalizePhone(phone_number);
+
+    const event = await createCalendarEvent({
+      calendarId: CALENDAR_ID,
+      title: `${selectedService.name} - ${customer_name}`,
+      description: [
+        `Customer name: ${customer_name}`,
+        `Phone number: ${cleanPhone}`,
+        `Service: ${selectedService.name}`,
+        `Appointment source: AI phone agent`,
+        `Notes: ${notes || ""}`
+      ].join("\n"),
+      startDateTime: start.toISOString(),
+      endDateTime: end.toISOString(),
+      timezone: bookingTimezone
+    });
+
+    return res.json({
+      status: "booked",
+      message: "Appointment confirmed",
+      business: businessConfig.businessName,
+      service: selectedService.name,
+      customer_name,
+      phone_number: cleanPhone,
+      date: start.format("dddd, MMMM D, YYYY"),
+      start_time: start.format("h:mm A"),
+      end_time: end.format("h:mm A"),
+      timezone: bookingTimezone,
+      calendar_event_id: event.id,
+      calendar_event_link: event.htmlLink
+    });
+  } catch (error) {
+    console.error("Booking error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Could not finalize appointment",
+      details: error.message
+    });
+  }
+});
+
+
 app.post("/check-available-slots", async (req, res) => {
   try {
     const { service, date, timezone } = req.body;
@@ -246,29 +367,24 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
       phone_number,
       service,
       start_datetime,
+      current_start_datetime,
+      appointment_start_datetime,
       timezone,
       notes
     } = req.body;
 
-    if (!customer_name || !phone_number || !service || !start_datetime) {
+    const startInput =
+      start_datetime || current_start_datetime || appointment_start_datetime;
+
+    if (!phone_number || !startInput) {
       return res.status(400).json({
         status: "error",
-        message: "Missing required fields: customer_name, phone_number, service, start_datetime"
-      });
-    }
-
-    const selectedService = businessConfig.services[service];
-
-    if (!selectedService) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid service",
-        allowed_services: Object.keys(businessConfig.services)
+        message: "Missing required fields: phone_number, start_datetime"
       });
     }
 
     const bookingTimezone = timezone || TIMEZONE;
-    const requestedStart = dayjs(start_datetime).tz(bookingTimezone);
+    const requestedStart = dayjs(startInput).tz(bookingTimezone);
 
     if (!requestedStart.isValid()) {
       return res.status(400).json({
@@ -278,10 +394,16 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
     }
 
     const cleanPhone = normalizePhone(phone_number);
-    const cleanServiceName = normalizeText(selectedService.name);
+
+    if (!cleanPhone) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid phone_number"
+      });
+    }
 
     const searchStart = requestedStart.subtract(1, "minute");
-    const searchEnd = requestedStart.add(selectedService.durationMinutes + 1, "minute");
+    const searchEnd = requestedStart.add(1, "minute");
 
     const events = await listCalendarEvents({
       calendarId: CALENDAR_ID,
@@ -290,13 +412,13 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
       timezone: bookingTimezone
     });
 
-    // Cancellation matching rule:
-    // Primary safe match = exact appointment start time + phone number.
-    // Name and service can be misheard by voice transcription, so they are not required.
+    // Clean cancellation rule:
+    // Primary match = phone number + exact appointment start time.
+    // Name and service are optional because voice transcription can mishear them.
     const phoneAndTimeMatches = events.filter((event) => {
       const eventStartRaw = event.start?.dateTime;
 
-      if (!eventStartRaw) {
+      if (!eventStartRaw || event.status === "cancelled") {
         return false;
       }
 
@@ -309,20 +431,27 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
       return phoneMatches && timeMatches;
     });
 
-    // If multiple phone/time matches exist, prefer the one with matching service.
-    const serviceMatches = phoneAndTimeMatches.filter((event) => {
-      const eventText = getEventSearchText(event);
-      return eventText.includes(cleanServiceName);
-    });
+    let matches = phoneAndTimeMatches;
 
-    const matches = serviceMatches.length > 0 ? serviceMatches : phoneAndTimeMatches;
+    // If service is provided and valid, use it only to narrow multiple matches.
+    // Do not require service for normal cancellation.
+    if (service && businessConfig.services[service] && phoneAndTimeMatches.length > 1) {
+      const cleanServiceName = normalizeText(businessConfig.services[service].name);
+
+      const serviceMatches = phoneAndTimeMatches.filter((event) => {
+        const eventText = getEventSearchText(event);
+        return eventText.includes(cleanServiceName);
+      });
+
+      if (serviceMatches.length > 0) {
+        matches = serviceMatches;
+      }
+    }
 
     if (matches.length === 0) {
       return res.json({
         status: "not_found",
         message: "No matching appointment found. Nothing was canceled.",
-        service: selectedService.name,
-        customer_name,
         phone_number: cleanPhone,
         date: requestedStart.format("dddd, MMMM D, YYYY"),
         start_time: requestedStart.format("h:mm A")
@@ -333,8 +462,6 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
       return res.json({
         status: "ambiguous",
         message: "More than one matching appointment was found. Nothing was canceled.",
-        service: selectedService.name,
-        customer_name,
         phone_number: cleanPhone,
         date: requestedStart.format("dddd, MMMM D, YYYY"),
         start_time: requestedStart.format("h:mm A")
@@ -348,18 +475,22 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
       eventId: eventToCancel.id
     });
 
+    const resolvedCustomerName =
+      customer_name ||
+      (typeof extractCustomerNameFromEvent === "function"
+        ? extractCustomerNameFromEvent(eventToCancel)
+        : "");
+
     return res.json({
       status: "canceled",
       message: "Appointment canceled",
       business: businessConfig.businessName,
-      service: selectedService.name,
-      customer_name,
+      customer_name: resolvedCustomerName,
       phone_number: cleanPhone,
       date: requestedStart.format("dddd, MMMM D, YYYY"),
       start_time: requestedStart.format("h:mm A"),
       timezone: bookingTimezone,
-      canceled_event_id: eventToCancel.id,
-      notes: notes || ""
+      calendar_event_id: eventToCancel.id
     });
   } catch (error) {
     console.error("Cancellation error:", error);
@@ -372,124 +503,6 @@ app.post("/cancel-appointment-if-found", async (req, res) => {
   }
 });
 
-app.post("/book-appointment-if-available", async (req, res) => {
-  try {
-    const {
-      customer_name,
-      phone_number,
-      service,
-      start_datetime,
-      timezone,
-      notes
-    } = req.body;
-
-    if (!customer_name || !phone_number || !service || !start_datetime) {
-      return res.status(400).json({
-        status: "error",
-        message: "Missing required fields: customer_name, phone_number, service, start_datetime"
-      });
-    }
-
-    const selectedService = businessConfig.services[service];
-
-    if (!selectedService) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid service",
-        allowed_services: Object.keys(businessConfig.services)
-      });
-    }
-
-    const bookingTimezone = timezone || TIMEZONE;
-    const start = dayjs(start_datetime).tz(bookingTimezone);
-    const end = start.add(selectedService.durationMinutes, "minute");
-
-    if (!start.isValid()) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid start_datetime"
-      });
-    }
-
-    const now = dayjs().tz(bookingTimezone);
-
-    if (start.isBefore(now)) {
-      return res.status(400).json({
-        status: "error",
-        message: "Cannot book an appointment in the past"
-      });
-    }
-
-    const hoursCheck = isInsideBusinessHours(start, end, bookingTimezone);
-
-    if (!hoursCheck.valid) {
-      return res.status(400).json({
-        status: "unavailable",
-        reason: hoursCheck.reason
-      });
-    }
-
-    const availability = await checkAvailability({
-      calendarId: CALENDAR_ID,
-      startDateTime: start.toISOString(),
-      endDateTime: end.toISOString(),
-      timezone: bookingTimezone
-    });
-
-    if (!availability.available) {
-      return res.json({
-        status: "busy",
-        message: "Requested time is already booked",
-        requested_slot: {
-          date: start.format("dddd, MMMM D, YYYY"),
-          start_time: start.format("h:mm A"),
-          end_time: end.format("h:mm A")
-        },
-        busy_slots: availability.busySlots
-      });
-    }
-
-    const cleanPhone = normalizePhone(phone_number);
-
-    const event = await createCalendarEvent({
-      calendarId: CALENDAR_ID,
-      title: `${selectedService.name} - ${customer_name}`,
-      description: [
-        `Customer name: ${customer_name}`,
-        `Phone number: ${cleanPhone}`,
-        `Service: ${selectedService.name}`,
-        `Appointment source: AI phone agent`,
-        `Notes: ${notes || ""}`
-      ].join("\n"),
-      startDateTime: start.toISOString(),
-      endDateTime: end.toISOString(),
-      timezone: bookingTimezone
-    });
-
-    return res.json({
-      status: "booked",
-      message: "Appointment confirmed",
-      business: businessConfig.businessName,
-      service: selectedService.name,
-      customer_name,
-      phone_number: cleanPhone,
-      date: start.format("dddd, MMMM D, YYYY"),
-      start_time: start.format("h:mm A"),
-      end_time: end.format("h:mm A"),
-      timezone: bookingTimezone,
-      calendar_event_id: event.id,
-      calendar_event_link: event.htmlLink
-    });
-  } catch (error) {
-    console.error("Booking error:", error);
-
-    return res.status(500).json({
-      status: "error",
-      message: "Could not finalize appointment",
-      details: error.message
-    });
-  }
-});
 
 
 app.post("/reschedule-appointment-if-found", async (req, res) => {
