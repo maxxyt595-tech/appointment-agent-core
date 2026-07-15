@@ -714,6 +714,17 @@ app.post("/reschedule-appointment-if-found", async (req, res) => {
 });
 
 
+
+app.get("/warm", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "appointment-agent-core",
+    warmed: true,
+    timestamp: new Date().toISOString()
+  });
+});
+
+
 app.listen(PORT, () => {
   console.log(`Appointment Agent Core running on http://localhost:${PORT}`);
 });
