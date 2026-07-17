@@ -725,6 +725,71 @@ app.get("/warm", (req, res) => {
 });
 
 
+
+app.get("/legal/privacy-policy", (req, res) => {
+  res.type("html").send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Privacy Policy - Ram's Auto Detailing</title>
+</head>
+<body>
+  <h1>Privacy Policy</h1>
+  <p>Ram's Auto Detailing uses customer information only to schedule, reschedule, cancel, and confirm appointments.</p>
+
+  <h2>Information We Collect</h2>
+  <p>We may collect a customer's name, phone number, appointment date and time, selected service, and appointment notes.</p>
+
+  <h2>SMS Messages</h2>
+  <p>Customers may receive SMS messages related to appointment confirmations, reschedule confirmations, cancellation confirmations, and appointment updates.</p>
+  <p>Message frequency varies based on appointment activity. Message and data rates may apply.</p>
+
+  <h2>Mobile Number Sharing</h2>
+  <p>No mobile information will be shared with third parties or affiliates for marketing or promotional purposes. All text messaging originator opt-in data and consent will not be shared with any third parties.</p>
+
+  <h2>Opt Out</h2>
+  <p>Customers can opt out of SMS messages at any time by replying STOP.</p>
+
+  <h2>Contact</h2>
+  <p>For questions, contact Ram's Auto Detailing.</p>
+</body>
+</html>`);
+});
+
+app.get("/legal/terms-and-conditions", (req, res) => {
+  res.type("html").send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Terms and Conditions - Ram's Auto Detailing</title>
+</head>
+<body>
+  <h1>Terms and Conditions</h1>
+
+  <p>By booking, rescheduling, or canceling an appointment with Ram's Auto Detailing and providing your mobile phone number, you agree to receive appointment-related SMS messages.</p>
+
+  <h2>SMS Program Description</h2>
+  <p>Messages may include appointment confirmations, appointment reschedule confirmations, cancellation confirmations, and appointment updates.</p>
+
+  <h2>Message Frequency</h2>
+  <p>Message frequency varies based on appointment activity.</p>
+
+  <h2>Fees</h2>
+  <p>Message and data rates may apply.</p>
+
+  <h2>Opt Out</h2>
+  <p>You can cancel SMS messages at any time by replying STOP.</p>
+
+  <h2>Help</h2>
+  <p>For help, reply HELP or contact Ram's Auto Detailing.</p>
+
+  <h2>Privacy</h2>
+  <p>Your mobile information will not be shared with third parties or affiliates for marketing or promotional purposes.</p>
+</body>
+</html>`);
+});
+
+
 app.listen(PORT, () => {
   console.log(`Appointment Agent Core running on http://localhost:${PORT}`);
 });
