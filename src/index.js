@@ -756,134 +756,40 @@ app.get("/legal/privacy-policy", (req, res) => {
 </html>`);
 });
 
-app.get("/legal/privacy-policy", (req, res) => {
-  res.type("html").send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Privacy Policy - Ram's Auto Detailing</title>
-</head>
-<body>
-  <h1>Privacy Policy</h1>
-
-  <p>
-    Ram's Auto Detailing uses customer information only to schedule,
-    reschedule, cancel, and confirm appointments.
-  </p>
-
-  <h2>Information We Collect</h2>
-
-  <p>
-    We may collect a customer's name, mobile phone number, appointment date
-    and time, selected service, and appointment notes.
-  </p>
-
-  <h2>SMS Messages</h2>
-
-  <p>
-    Customers may receive appointment confirmations, appointment reminders,
-    appointment reschedule confirmations, appointment cancellation
-    confirmations, and appointment-related updates after providing consent
-    to receive SMS messages.
-  </p>
-
-  <p>
-    Message frequency varies based on appointment activity. Message and data
-    rates may apply. Reply STOP to opt out. Reply HELP for assistance.
-  </p>
-
-  <h2>Mobile Number Sharing</h2>
-
-  <p>
-    No mobile information will be shared with third parties or affiliates for
-    marketing or promotional purposes. Text messaging originator opt-in data
-    and consent will not be shared with any third parties. This information is
-    used only to provide appointment-related SMS communications.
-  </p>
-
-  <h2>Opt Out</h2>
-
-  <p>
-    Customers may opt out of SMS messages at any time by replying STOP.
-  </p>
-
-  <h2>Help</h2>
-
-  <p>
-    Customers may reply HELP for assistance or contact Ram's Auto Detailing.
-  </p>
-
-  <h2>Contact</h2>
-
-  <p>
-    For questions about this Privacy Policy, contact Ram's Auto Detailing.
-  </p>
-</body>
-</html>`);
-});
-
 app.get("/legal/terms-and-conditions", (req, res) => {
   res.type("html").send(`<!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Terms and Conditions - Ram's Auto Detailing</title>
 </head>
 <body>
   <h1>Terms and Conditions</h1>
 
-  <p>
-    By providing your mobile phone number and verbally agreeing to receive SMS
-    messages during your phone call with Ram's Auto Detailing, you consent to
-    receive appointment-related SMS messages.
-  </p>
-
-  <p>
-    SMS consent is optional and is not required to book, reschedule, cancel,
-    or purchase appointment services.
-  </p>
+  <p>By booking, rescheduling, or canceling an appointment with Ram's Auto Detailing and providing your mobile phone number, you agree to receive appointment-related SMS messages.</p>
 
   <h2>SMS Program Description</h2>
-
-  <p>
-    Messages may include appointment confirmations, appointment reminders,
-    appointment reschedule confirmations, appointment cancellation
-    confirmations, and appointment-related updates.
-  </p>
+  <p>Messages may include appointment confirmations, appointment reschedule confirmations, cancellation confirmations, and appointment updates.</p>
 
   <h2>Message Frequency</h2>
-
-  <p>
-    Message frequency varies based on appointment activity.
-  </p>
+  <p>Message frequency varies based on appointment activity.</p>
 
   <h2>Fees</h2>
-
-  <p>
-    Message and data rates may apply.
-  </p>
+  <p>Message and data rates may apply.</p>
 
   <h2>Opt Out</h2>
-
-  <p>
-    You may cancel SMS messages at any time by replying STOP.
-  </p>
+  <p>You can cancel SMS messages at any time by replying STOP.</p>
 
   <h2>Help</h2>
-
-  <p>
-    For assistance, reply HELP or contact Ram's Auto Detailing.
-  </p>
+  <p>For help, reply HELP or contact Ram's Auto Detailing.</p>
 
   <h2>Privacy</h2>
-
-  <p>
-    Mobile information will not be shared with third parties or affiliates for
-    marketing or promotional purposes. Text messaging originator opt-in data
-    and consent will not be shared with any third parties.
-  </p>
+  <p>Your mobile information will not be shared with third parties or affiliates for marketing or promotional purposes.</p>
 </body>
 </html>`);
+});
+
+
+app.listen(PORT, () => {
+  console.log(`Appointment Agent Core running on http://localhost:${PORT}`);
 });
